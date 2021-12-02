@@ -1,0 +1,284 @@
+Macro Life, a healthcare company has recently setup the entire Network and Infrastructure on Azure.
+The infrastructure has different components such as Virtual N/W, Subnets, NIC, IPs, NSG etc.
+The IT team currently has developed PowerShell scripts to deploy each component where all the
+properties of each resource is set using PowerShell commands.
+The business has realized that the PowerShell scripts are growing over period of time and difficult to
+handover when new admin onboards in the IT.
+The IT team has now decided to move to Terraform based deployment of all resources to Azure.
+All the passwords are stored in a Azure Service known as key Vault. The deployments needs to be
+automated using Azure DevOps using IaC(Infrastructure as Code).
+1) What are different artifacts you need to create - name of the artifacts and its purpose
+2) List the tools you will to create and store the Terraform templates.
+3) Explain the process and steps to create automated deployment pipeline.
+4) Create a sample Terraform template you will use to deploy Below services:
+Vnet
+2 Subnet
+NSG to open port 80 and 443
+1 Window VM in each subnet
+1 Storage account
+5) Explain how will you access the password stored in Key Vault and use it as Admin Password in the VM
+Terraform template
+
+
+Step 1) What are different artifacts you need to create - name of the artifacts and its purpose
+  We need the to get the artifacts from the Build stage which holds the tf files to provision the resources
+  
+Step 2)  List the tools you will to create and store the Terraform templates.
+  We can use VScode for terraform templates and save them either in git or Azure Repos where we enable protection for accidental merges
+  
+Step 3)  Explain the process and steps to create automated deployment pipeline.  
+
+ We need to create a Release pipeline either from console or with an yaml which gathers the build artifacts from earlier stage and deploy them to Enviornments.
+  Note: Refer Q1 challenge for the sample pipeline yaml
+Step 4 & 5 ) Create a sample Terraform template you will use to deploy Below services:
+      Vnet
+      2 Subnet
+      NSG to open port 80 and 443
+      1 Window VM in each subnet
+      1 Storage account  
+      Explain how will you access the password stored in Key Vault and use it as Admin Password in the VM
+************************************************************************************************************************      
+      # Create Virtual Network
+resource "azurerm_virtual_network" "vnet" {
+  name                = "${local.resource_name_prefix}-${var.vnet_name}"
+  address_space       = var.vnet_address_space
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  tags = local.common_tags
+}
+
+
+# Resource-1: Create WebTier Subnet
+resource "azurerm_subnet" "websubnet" {
+  name                 = "${azurerm_virtual_network.vnet.name}-${var.web_subnet_name}"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.vnet.name
+  address_prefixes     = var.web_subnet_address  
+}
+
+# Resource-2: Create Network Security Group (NSG)
+resource "azurerm_network_security_group" "web_subnet_nsg" {
+  name                = "${azurerm_subnet.websubnet.name}-nsg"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+}
+
+# Resource-3: Associate NSG and Subnet
+resource "azurerm_subnet_network_security_group_association" "web_subnet_nsg_associate" {
+  depends_on = [ azurerm_network_security_rule.web_nsg_rule_inbound] # Every NSG Rule Association will disassociate NSG from Subnet and Associate it, so we associate it only after NSG is completely created - Azure Provider Bug https://github.com/terraform-providers/terraform-provider-azurerm/issues/354  
+  subnet_id                 = azurerm_subnet.websubnet.id
+  network_security_group_id = azurerm_network_security_group.web_subnet_nsg.id
+}
+
+# Resource-4: Create NSG Rules
+## Locals Block for Security Rules
+locals {
+  web_inbound_ports_map = {
+    "100" : "80", # If the key starts with a number, you must use the colon syntax ":" instead of "="
+    "110" : "443",
+    "120" : "22"
+  } 
+}
+## NSG Inbound Rule for WebTier Subnets
+resource "azurerm_network_security_rule" "web_nsg_rule_inbound" {
+  for_each = local.web_inbound_ports_map
+  name                        = "Rule-Port-${each.value}"
+  priority                    = each.key
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = each.value 
+  source_address_prefix       = "*"
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.rg.name
+  network_security_group_name = azurerm_network_security_group.web_subnet_nsg.name
+}
+
+
+
+# Resource-1: Create DBTier Subnet
+resource "azurerm_subnet" "dbsubnet" {
+  name                 = "${azurerm_virtual_network.vnet.name}-${var.db_subnet_name}"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.vnet.name
+  address_prefixes     = var.db_subnet_address  
+}
+
+# Resource-2: Create Network Security Group (NSG)
+resource "azurerm_network_security_group" "db_subnet_nsg" {
+  name                = "${azurerm_subnet.dbsubnet.name}-nsg"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+}
+
+# Resource-3: Associate NSG and Subnet
+resource "azurerm_subnet_network_security_group_association" "db_subnet_nsg_associate" {
+  depends_on = [ azurerm_network_security_rule.db_nsg_rule_inbound]  
+  subnet_id                 = azurerm_subnet.dbsubnet.id
+  network_security_group_id = azurerm_network_security_group.db_subnet_nsg.id
+}
+
+# Resource-4: Create NSG Rules
+## Locals Block for Security Rules
+locals {
+  db_inbound_ports_map = {
+    "100" : "3306", # If the key starts with a number, you must use the colon syntax ":" instead of "="
+    "110" : "1433",
+    "120" : "5432"
+  } 
+}
+## NSG Inbound Rule for DBTier Subnets
+resource "azurerm_network_security_rule" "db_nsg_rule_inbound" {
+  for_each = local.db_inbound_ports_map
+  name                        = "Rule-Port-${each.value}"
+  priority                    = each.key
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = each.value 
+  source_address_prefix       = "*"
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.rg.name
+  network_security_group_name = azurerm_network_security_group.db_subnet_nsg.name
+}
+*******************************************Key vault ************************************
+
+data "azurerm_client_config" "current" {}
+
+# Create the Azure Key Vault
+resource "azurerm_key_vault" "key-vault" {
+  name                = var.name
+  location            = var.location
+  resource_group_name = var.resource_group_name
+  
+  enabled_for_deployment          = var.enabled_for_deployment
+  enabled_for_disk_encryption     = var.enabled_for_disk_encryption
+  enabled_for_template_deployment = var.enabled_for_template_deployment
+
+  tenant_id = data.azurerm_client_config.current.tenant_id
+  sku_name  = var.sku_name
+  tags      = var.tags
+
+  network_acls {
+    default_action = "Allow"
+    bypass         = "AzureServices"
+  }
+}
+
+# Create a Default Azure Key Vault access policy with Admin permissions
+# This policy must be kept for a proper run of the "destroy" process
+resource "azurerm_key_vault_access_policy" "default_policy" {
+  key_vault_id = azurerm_key_vault.key-vault.id
+  tenant_id    = data.azurerm_client_config.current.tenant_id
+  object_id    = data.azurerm_client_config.current.object_id
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  key_permissions = var.kv-key-permissions-full
+  secret_permissions = var.kv-secret-permissions-full
+  certificate_permissions = var.kv-certificate-permissions-full
+  storage_permissions = var.kv-storage-permissions-full
+}
+
+# Create an Azure Key Vault access policy
+resource "azurerm_key_vault_access_policy" "policy" {
+  for_each                = var.policies
+  key_vault_id            = azurerm_key_vault.key-vault.id
+  tenant_id               = lookup(each.value, "tenant_id")
+  object_id               = lookup(each.value, "object_id")
+  key_permissions         = lookup(each.value, "key_permissions")
+  secret_permissions      = lookup(each.value, "secret_permissions")
+  certificate_permissions = lookup(each.value, "certificate_permissions")
+  storage_permissions     = lookup(each.value, "storage_permissions")
+}
+
+# Generate a random password
+resource "random_password" "password" {
+  length      = 20
+  min_upper   = 2
+  min_lower   = 2
+  min_numeric = 2
+  min_special = 2
+}
+
+# Create an Azure Key Vault secrets
+resource "azurerm_key_vault_secret" "secret" {
+  key_vault_id = azurerm_key_vault.key-vault.id
+  name         = "vm-secret"
+  value        = "${random_password.password.result}"
+}
+
+output "vm_password" {
+ value = "${azurerm_key_vault_secret.vm_secret.value}"
+ }
+**************Windows VM ********************
+
+variable "VirtualMachines" {
+  type = list(object({
+    hostname= string
+    interfaceid = string 
+  }))
+  default = [
+    {
+        hostname= "VM01",
+        interfaceid = "01"
+    },
+     {
+        hostname= "VM02",
+        interfaceid = "02"
+    }
+  ]
+}
+
+resource "azurerm_windows_virtual_machine" "example" {
+ for_each = {for vm in var.VirtualMachines: vm.hostname => vm}
+
+  name =  each.value.hostname
+  resource_group_name = azurerm_resource_group.example.name
+  location            = azurerm_resource_group.example.location
+  size                = "Standard_F2"
+  admin_username      = "adminuser"
+  admin_password      = '${azurerm_key_vault_secret.vm_secret.value}"
+
+  os_disk {
+    caching              = "ReadWrite"
+    storage_account_type = "Standard_LRS"
+  }
+
+  source_image_reference {
+    publisher = "MicrosoftWindowsServer"
+    offer     = "WindowsServer"
+    sku       = "2016-Datacenter"
+    version   = "latest"
+  }
+}
+
+*******************************************************************************
+
+###############Storage account #####################3
+
+resource "azurerm_storage_account" "example" {
+  name                = "storageaccountname"
+  resource_group_name = azurerm_resource_group.example.name
+
+  location                 = azurerm_resource_group.example.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+
+  network_rules {
+    default_action             = "Deny"
+    ip_rules                   = ["100.0.0.1"]
+    virtual_network_subnet_ids = [azurerm_subnet.example.id]
+  }
+
+  tags = {
+    environment = "staging"
+  }
+}
+
+  
+  
